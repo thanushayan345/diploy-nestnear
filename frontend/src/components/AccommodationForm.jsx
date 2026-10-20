@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
+import { AlertCircle, CheckCircle2, ImagePlus, ShieldAlert } from "lucide-react";
 import { accommodationApi, resolveImageUrl } from "../services/api";
+import LocationPicker from "./LocationPicker";
+import UniversitySelector from "./UniversitySelector";
 
 const DEFAULT_VALUES = {
   title: "",
@@ -15,6 +18,8 @@ const DEFAULT_VALUES = {
   gender_preference: "Any",
   address: "",
   contact_phone: "",
+  latitude: "6.9000",
+  longitude: "79.8588",
   is_available: true,
 };
 
@@ -27,6 +32,7 @@ export default function AccommodationForm({
   const [options, setOptions] = useState({
     districts: [],
     universities: [],
+    university_details: [],
     accommodation_types: ["Room", "Boarding House", "Annex"],
     gender_preferences: ["Any", "Male", "Female"],
     facilities: [],
@@ -41,12 +47,16 @@ export default function AccommodationForm({
   useEffect(() => {
     accommodationApi
       .getOptions()
-      .then((data) => setOptions(data))
+      .then((data) => setOptions((prev) => ({ ...prev, ...data })))
       .catch(() => {});
   }, []);
 
   useEffect(() => {
     if (initialValues) {
+      const lat =
+        initialValues.latitude ?? initialValues.approx_latitude ?? "";
+      const lng =
+        initialValues.longitude ?? initialValues.approx_longitude ?? "";
       setValues({
         title: initialValues.title || "",
         description: initialValues.description || "",
@@ -64,6 +74,8 @@ export default function AccommodationForm({
         gender_preference: initialValues.gender_preference || "Any",
         address: initialValues.address || "",
         contact_phone: initialValues.contact_phone || "",
+        latitude: lat !== "" ? String(lat) : "",
+        longitude: lng !== "" ? String(lng) : "",
         is_available: Boolean(initialValues.is_available),
       });
       if (initialValues.image_url) {
@@ -78,6 +90,28 @@ export default function AccommodationForm({
       ...prev,
       [name]: type === "checkbox" ? checked : value,
     }));
+  }
+
+  function handleUniversityChange(uniName) {
+    const uniMeta = options.university_details?.find(
+      (u) => u.name === uniName
+    );
+    setValues((prev) => ({
+      ...prev,
+      nearby_university: uniName || "University of Colombo",
+      district: uniMeta?.district || prev.district,
+    }));
+  }
+
+  function handleCoordinatesChange(lat, lng) {
+    setValues((prev) => ({
+      ...prev,
+      latitude: lat,
+      longitude: lng,
+    }));
+    if (fieldErrors.location) {
+      setFieldErrors((prev) => ({ ...prev, location: undefined }));
+    }
   }
 
   function toggleFacility(facility) {
@@ -102,6 +136,23 @@ export default function AccommodationForm({
     event.preventDefault();
     setErrorMessage("");
     setFieldErrors({});
+
+    const latNum = parseFloat(values.latitude);
+    const lngNum = parseFloat(values.longitude);
+    if (
+      !values.latitude ||
+      !values.longitude ||
+      Number.isNaN(latNum) ||
+      Number.isNaN(lngNum)
+    ) {
+      setFieldErrors({
+        location:
+          "Please select the accommodation location on the map before saving.",
+      });
+      setErrorMessage("Please pin the property location on the map.");
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -119,6 +170,8 @@ export default function AccommodationForm({
       formData.append("gender_preference", values.gender_preference);
       formData.append("address", values.address);
       formData.append("contact_phone", values.contact_phone);
+      formData.append("latitude", values.latitude);
+      formData.append("longitude", values.longitude);
       formData.append("is_available", values.is_available ? "true" : "false");
 
       if (imageFile) {
@@ -137,18 +190,19 @@ export default function AccommodationForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 space-y-6"
+      className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 sm:p-8 space-y-6"
     >
       {errorMessage && (
-        <div className="p-4 rounded-lg bg-red-50 border border-red-200 text-sm text-red-700">
-          {errorMessage}
+        <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700 flex items-center gap-2.5">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMessage}</span>
         </div>
       )}
 
       {/* Title & Type */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="md:col-span-2">
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Listing Title *
           </label>
           <input
@@ -158,7 +212,7 @@ export default function AccommodationForm({
             onChange={handleChange}
             placeholder="e.g. Quiet single room near University of Moratuwa"
             required
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           />
           {fieldErrors.title && (
             <p className="mt-1 text-xs text-red-600">{fieldErrors.title}</p>
@@ -166,14 +220,14 @@ export default function AccommodationForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Accommodation Type *
           </label>
           <select
             name="accommodation_type"
             value={values.accommodation_type}
             onChange={handleChange}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           >
             {options.accommodation_types.map((t) => (
               <option key={t} value={t}>
@@ -191,7 +245,7 @@ export default function AccommodationForm({
 
       {/* Description */}
       <div>
-        <label className="block text-sm font-medium text-gray-700">
+        <label className="block text-sm font-semibold text-slate-800">
           Description *
         </label>
         <textarea
@@ -201,24 +255,40 @@ export default function AccommodationForm({
           onChange={handleChange}
           placeholder="Describe the room, distance to campus, house rules, and bills included..."
           required
-          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+          className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
         />
         {fieldErrors.description && (
           <p className="mt-1 text-xs text-red-600">{fieldErrors.description}</p>
         )}
       </div>
 
-      {/* Location: District, Town, Nearby University */}
+      {/* Location: Nearby University, District, Town */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <UniversitySelector
+            label="Nearby University *"
+            universities={options.universities}
+            universityDetails={options.university_details}
+            value={values.nearby_university}
+            onChange={handleUniversityChange}
+            placeholder="Select nearest university"
+          />
+          {fieldErrors.nearby_university && (
+            <p className="mt-1 text-xs text-red-600">
+              {fieldErrors.nearby_university}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
             District *
           </label>
           <select
             name="district"
             value={values.district}
             onChange={handleChange}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           >
             {options.districts.map((d) => (
               <option key={d} value={d}>
@@ -232,7 +302,7 @@ export default function AccommodationForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
             Town / Suburb *
           </label>
           <input
@@ -242,41 +312,28 @@ export default function AccommodationForm({
             onChange={handleChange}
             placeholder="e.g. Katubedda, Nugegoda, Peradeniya"
             required
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           />
           {fieldErrors.town && (
             <p className="mt-1 text-xs text-red-600">{fieldErrors.town}</p>
           )}
         </div>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Nearby University *
-          </label>
-          <select
-            name="nearby_university"
-            value={values.nearby_university}
-            onChange={handleChange}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
-          >
-            {options.universities.map((u) => (
-              <option key={u} value={u}>
-                {u}
-              </option>
-            ))}
-          </select>
-          {fieldErrors.nearby_university && (
-            <p className="mt-1 text-xs text-red-600">
-              {fieldErrors.nearby_university}
-            </p>
-          )}
-        </div>
       </div>
+
+      {/* Interactive Map Location Picker */}
+      <LocationPicker
+        latitude={values.latitude}
+        longitude={values.longitude}
+        onChange={handleCoordinatesChange}
+        nearbyUniversity={values.nearby_university}
+        universityDetails={options.university_details}
+        error={fieldErrors.location}
+      />
 
       {/* Pricing, Rooms & Gender Preference */}
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Monthly Rent (LKR) *
           </label>
           <input
@@ -288,7 +345,7 @@ export default function AccommodationForm({
             onChange={handleChange}
             placeholder="18000"
             required
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           />
           {fieldErrors.monthly_rent && (
             <p className="mt-1 text-xs text-red-600">
@@ -298,7 +355,7 @@ export default function AccommodationForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Key Money / Deposit (LKR)
           </label>
           <input
@@ -309,7 +366,7 @@ export default function AccommodationForm({
             value={values.deposit}
             onChange={handleChange}
             placeholder="36000"
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           />
           {fieldErrors.deposit && (
             <p className="mt-1 text-xs text-red-600">{fieldErrors.deposit}</p>
@@ -317,7 +374,7 @@ export default function AccommodationForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Available Rooms *
           </label>
           <input
@@ -328,7 +385,7 @@ export default function AccommodationForm({
             value={values.available_rooms}
             onChange={handleChange}
             required
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           />
           {fieldErrors.available_rooms && (
             <p className="mt-1 text-xs text-red-600">
@@ -338,14 +395,14 @@ export default function AccommodationForm({
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-gray-700">
+          <label className="block text-sm font-semibold text-slate-800">
             Gender Preference
           </label>
           <select
             name="gender_preference"
             value={values.gender_preference}
             onChange={handleChange}
-            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+            className="mt-1 w-full rounded-xl border border-slate-300 px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
           >
             {options.gender_preferences.map((g) => (
               <option key={g} value={g}>
@@ -363,7 +420,7 @@ export default function AccommodationForm({
 
       {/* Facilities Checkboxes */}
       <div>
-        <span className="block text-sm font-medium text-gray-700 mb-2">
+        <span className="block text-sm font-semibold text-slate-800 mb-2">
           Facilities Included
         </span>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
@@ -372,17 +429,17 @@ export default function AccommodationForm({
             return (
               <label
                 key={facility}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-medium cursor-pointer transition-colors ${
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-medium cursor-pointer transition-colors ${
                   selected
-                    ? "bg-emerald-50 border-emerald-700 text-emerald-900"
-                    : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                    ? "bg-teal-50 border-teal-700 text-teal-900"
+                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
                 }`}
               >
                 <input
                   type="checkbox"
                   checked={selected}
                   onChange={() => toggleFacility(facility)}
-                  className="accent-emerald-800"
+                  className="accent-teal-700"
                 />
                 <span>{facility}</span>
               </label>
@@ -395,16 +452,19 @@ export default function AccommodationForm({
       </div>
 
       {/* Private Address & Contact Phone (shared only after booking is accepted) */}
-      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 space-y-4">
-        <p className="text-xs text-gray-600">
-          <strong>Privacy Notice:</strong> Your exact street address and contact
-          phone number are hidden from the public and are shared with a student
-          only after you accept their booking request.
+      <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+        <p className="text-xs text-slate-600 flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-teal-700 shrink-0" />
+          <span>
+            <strong>Privacy Notice:</strong> Your exact street address, exact
+            map coordinates, and phone number are hidden from the public and are
+            shared with a student only after you accept their booking request.
+          </span>
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700">
-              Exact Street Address *
+            <label className="block text-sm font-semibold text-slate-800">
+              Exact Street Address (Manual Fallback) *
             </label>
             <input
               type="text"
@@ -413,7 +473,7 @@ export default function AccommodationForm({
               onChange={handleChange}
               placeholder="e.g. 42/3 Station Road, Katubedda, Moratuwa"
               required
-              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
             />
             {fieldErrors.address && (
               <p className="mt-1 text-xs text-red-600">{fieldErrors.address}</p>
@@ -421,7 +481,7 @@ export default function AccommodationForm({
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">
+            <label className="block text-sm font-semibold text-slate-800">
               Contact Phone Number *
             </label>
             <input
@@ -431,7 +491,7 @@ export default function AccommodationForm({
               onChange={handleChange}
               placeholder="0771234567"
               required
-              className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-emerald-700 focus:outline-none"
+              className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm focus:border-teal-600 focus:outline-none"
             />
             {fieldErrors.contact_phone && (
               <p className="mt-1 text-xs text-red-600">
@@ -445,17 +505,21 @@ export default function AccommodationForm({
       {/* Photo Upload & Availability Toggle */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
         <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Accommodation Photo {requireImage ? "*" : "(optional to replace)"}
+          <label className="block text-sm font-semibold text-slate-800 flex items-center gap-1.5">
+            <ImagePlus className="w-4 h-4 text-teal-700" />
+            <span>
+              Accommodation Photo{" "}
+              {requireImage ? "*" : "(optional to replace)"}
+            </span>
           </label>
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
             onChange={handleImageChange}
             required={requireImage}
-            className="mt-1 block w-full text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-emerald-50 file:text-emerald-800 hover:file:bg-emerald-100"
+            className="mt-1.5 block w-full text-sm text-slate-700 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-800 hover:file:bg-teal-100"
           />
-          <p className="mt-1 text-xs text-gray-500">
+          <p className="mt-1 text-xs text-slate-500">
             JPG, PNG or WEBP up to 3 MB.
           </p>
           {fieldErrors.image && (
@@ -465,7 +529,7 @@ export default function AccommodationForm({
             <img
               src={previewUrl}
               alt="Listing preview"
-              className="mt-3 h-36 w-56 object-cover rounded-lg border border-gray-200"
+              className="mt-3 h-36 w-56 object-cover rounded-xl border border-slate-200"
             />
           )}
         </div>
@@ -477,9 +541,10 @@ export default function AccommodationForm({
               name="is_available"
               checked={values.is_available}
               onChange={handleChange}
-              className="w-4 h-4 accent-emerald-800"
+              className="w-4 h-4 accent-teal-700"
             />
-            <span className="text-sm font-medium text-gray-800">
+            <span className="text-sm font-medium text-slate-800 flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-teal-700" />
               Mark accommodation as currently available for booking requests
             </span>
           </label>
@@ -490,7 +555,7 @@ export default function AccommodationForm({
         <button
           type="submit"
           disabled={submitting}
-          className="px-6 py-2.5 rounded-lg text-sm font-semibold bg-emerald-800 text-white hover:bg-emerald-900 disabled:opacity-60 transition-colors cursor-pointer"
+          className="px-6 py-2.5 rounded-xl text-sm font-semibold bg-teal-700 text-white hover:bg-teal-800 disabled:opacity-60 transition-colors cursor-pointer"
         >
           {submitting ? "Saving..." : submitLabel}
         </button>

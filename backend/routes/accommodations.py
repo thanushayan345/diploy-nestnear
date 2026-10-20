@@ -4,19 +4,34 @@ import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
 
-from constants import ACCOMMODATION_TYPES, DISTRICTS, FACILITIES, GENDER_PREFERENCES, UNIVERSITIES
+from constants import (
+    ACCOMMODATION_TYPES,
+    DISTRICTS,
+    FACILITIES,
+    GENDER_PREFERENCES,
+    UNIVERSITIES,
+    UNIVERSITY_BY_NAME,
+    UNIVERSITY_DATA,
+)
 from database import get_db
 from security import ApiError, error_response, role_required
-from validators import clean_text, validate_accommodation, validate_image
+from validators import (
+    clean_text,
+    compute_approx_coordinates,
+    haversine_km,
+    validate_accommodation,
+    validate_image,
+)
 
 bp = Blueprint("accommodations", __name__, url_prefix="/api")
 
-# Columns that anyone may see. Address and contact phone are NOT included.
+# Columns that anyone may see. Exact address, contact_phone, latitude and
+# longitude are NEVER selected in public queries.
 PUBLIC_COLUMNS = """
     a.id, a.title, a.description, a.accommodation_type, a.district, a.town,
     a.nearby_university, a.monthly_rent, a.deposit, a.facilities,
-    a.available_rooms, a.gender_preference, a.image_filename, a.is_available,
-    a.created_at
+    a.available_rooms, a.gender_preference, a.approx_latitude, a.approx_longitude,
+    a.image_filename, a.is_available, a.created_at
 """
 
 SORT_OPTIONS = {
@@ -26,8 +41,27 @@ SORT_OPTIONS = {
 }
 
 
-def accommodation_to_dict(row, include_private=False):
+def accommodation_to_dict(row, include_private=False, reference_university=None):
     """Convert a database row to JSON. Private fields only when allowed."""
+    row_keys = row.keys()
+    approx_lat = row["approx_latitude"] if "approx_latitude" in row_keys else None
+    approx_lng = row["approx_longitude"] if "approx_longitude" in row_keys else None
+
+    target_uni_name = reference_university or row["nearby_university"]
+    uni_info = UNIVERSITY_BY_NAME.get(target_uni_name) or UNIVERSITY_BY_NAME.get(
+        row["nearby_university"]
+    )
+
+    # Calculate distance using public approximate coordinates for browsing so
+    # exact hidden coordinates cannot be trilaterated by public users.
+    distance_km = None
+    if uni_info and approx_lat is not None and approx_lng is not None:
+        distance_km = haversine_km(
+            approx_lat, approx_lng, uni_info["latitude"], uni_info["longitude"]
+        )
+
+    nearby_uni_meta = UNIVERSITY_BY_NAME.get(row["nearby_university"])
+
     data = {
         "id": row["id"],
         "title": row["title"],
@@ -36,11 +70,22 @@ def accommodation_to_dict(row, include_private=False):
         "district": row["district"],
         "town": row["town"],
         "nearby_university": row["nearby_university"],
+        "university_coordinates": (
+            {
+                "latitude": nearby_uni_meta["latitude"],
+                "longitude": nearby_uni_meta["longitude"],
+            }
+            if nearby_uni_meta
+            else None
+        ),
         "monthly_rent": row["monthly_rent"],
         "deposit": row["deposit"],
         "facilities": [f for f in (row["facilities"] or "").split(",") if f],
         "available_rooms": row["available_rooms"],
         "gender_preference": row["gender_preference"],
+        "approx_latitude": approx_lat,
+        "approx_longitude": approx_lng,
+        "distance_km": distance_km,
         "image_url": f"/uploads/{row['image_filename']}" if row["image_filename"] else None,
         "is_available": bool(row["is_available"]),
         "created_at": row["created_at"],
@@ -48,6 +93,8 @@ def accommodation_to_dict(row, include_private=False):
     if include_private:
         data["address"] = row["address"]
         data["contact_phone"] = row["contact_phone"]
+        data["latitude"] = row["latitude"] if "latitude" in row_keys else None
+        data["longitude"] = row["longitude"] if "longitude" in row_keys else None
     return data
 
 
@@ -95,14 +142,28 @@ def parse_optional_int(name):
         raise ApiError(f"'{name}' must be a whole number.", 400)
 
 
+def parse_optional_float(name):
+    value = clean_text(request.args.get(name))
+    if not value:
+        return None
+    try:
+        num = float(value)
+        if num <= 0:
+            raise ValueError
+        return num
+    except ValueError:
+        raise ApiError(f"'{name}' must be a positive number.", 400)
+
+
 # ------------------------------------------------------------- Options ----
 @bp.get("/options")
 def options():
-    """Dropdown values for the frontend forms."""
+    """Dropdown values and verified university coordinates for the frontend."""
     return jsonify(
         {
             "districts": DISTRICTS,
             "universities": UNIVERSITIES,
+            "university_details": UNIVERSITY_DATA,
             "accommodation_types": ACCOMMODATION_TYPES,
             "gender_preferences": GENDER_PREFERENCES,
             "facilities": FACILITIES,
@@ -136,7 +197,14 @@ def list_accommodations():
         params.append(like_pattern(town))
 
     university = clean_text(args.get("university"))
-    if university:
+    radius_km = parse_optional_float("radius_km")
+    selected_uni_meta = UNIVERSITY_BY_NAME.get(university) if university else None
+
+    # When a university is selected without a radius filter, filter directly by
+    # nearby_university. When a radius filter IS provided, we evaluate Haversine
+    # distance from the selected university across all candidate listings so
+    # nearby listings in adjacent towns within that radius are also discovered.
+    if university and not (selected_uni_meta and radius_km is not None):
         where.append("a.nearby_university = ?")
         params.append(university)
 
@@ -163,13 +231,45 @@ def list_accommodations():
     if args.get("available_only", "").lower() in ("1", "true", "yes"):
         where.append("a.is_available = 1 AND a.available_rooms > 0")
 
-    order_by = SORT_OPTIONS.get(args.get("sort"), SORT_OPTIONS["newest"])
+    sort_key = clean_text(args.get("sort")) or "newest"
+    order_by = SORT_OPTIONS.get(sort_key, SORT_OPTIONS["newest"])
     limit = min(parse_optional_int("limit") or 60, 100)
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
     sql = f"SELECT {PUBLIC_COLUMNS} FROM accommodations a {where_sql} ORDER BY {order_by} LIMIT ?"
     rows = get_db().execute(sql, params + [limit]).fetchall()
-    return jsonify({"accommodations": [accommodation_to_dict(r) for r in rows]})
+
+    results = []
+    for row in rows:
+        item = accommodation_to_dict(
+            row,
+            include_private=False,
+            reference_university=university if selected_uni_meta else None,
+        )
+        if selected_uni_meta and radius_km is not None:
+            dist = item.get("distance_km")
+            if dist is not None:
+                if dist > radius_km:
+                    continue
+            elif item["nearby_university"] != university:
+                continue
+        results.append(item)
+
+    if sort_key == "nearest":
+        results.sort(
+            key=lambda x: (
+                x["distance_km"] is None,
+                x["distance_km"] if x["distance_km"] is not None else 999999,
+                -x["id"],
+            )
+        )
+
+    return jsonify(
+        {
+            "accommodations": results,
+            "selected_university": selected_uni_meta,
+        }
+    )
 
 
 # ------------------------------------------------------------- Details ----
@@ -203,7 +303,8 @@ def get_accommodation(accommodation_id):
             is not None
         )
 
-    # Exact address and phone: only the owner, or a student whose booking was accepted.
+    # Exact address, phone, and exact coordinates: only the owner, or a student
+    # whose booking was accepted.
     data = accommodation_to_dict(row, include_private=is_owner or has_accepted_booking)
     if has_accepted_booking:
         owner = db.execute("SELECT full_name FROM users WHERE id = ?", (row["owner_id"],)).fetchone()
@@ -253,14 +354,18 @@ def create_accommodation():
             """INSERT INTO accommodations
                (owner_id, title, description, accommodation_type, district, town,
                 nearby_university, monthly_rent, deposit, facilities, available_rooms,
-                gender_preference, address, contact_phone, image_filename, is_available)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                gender_preference, address, contact_phone, latitude, longitude,
+                approx_latitude, approx_longitude, image_filename, is_available)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 g.user["id"], cleaned["title"], cleaned["description"],
                 cleaned["accommodation_type"], cleaned["district"], cleaned["town"],
                 cleaned["nearby_university"], cleaned["monthly_rent"], cleaned["deposit"],
                 cleaned["facilities"], cleaned["available_rooms"], cleaned["gender_preference"],
-                cleaned["address"], cleaned["contact_phone"], filename, cleaned["is_available"],
+                cleaned["address"], cleaned["contact_phone"],
+                cleaned["latitude"], cleaned["longitude"],
+                cleaned["approx_latitude"], cleaned["approx_longitude"],
+                filename, cleaned["is_available"],
             ),
         )
         db.commit()
@@ -285,6 +390,11 @@ def update_accommodation(accommodation_id):
     if errors:
         return error_response("Please fix the highlighted fields.", 400, errors)
 
+    # Preserve existing coordinates if none were sent in the update payload
+    lat = cleaned["latitude"] if cleaned["latitude"] is not None else existing["latitude"]
+    lng = cleaned["longitude"] if cleaned["longitude"] is not None else existing["longitude"]
+    approx_lat, approx_lng = compute_approx_coordinates(lat, lng)
+
     new_filename = save_image(image, ext) if ext else None
     db = get_db()
     try:
@@ -293,6 +403,7 @@ def update_accommodation(accommodation_id):
                  title = ?, description = ?, accommodation_type = ?, district = ?, town = ?,
                  nearby_university = ?, monthly_rent = ?, deposit = ?, facilities = ?,
                  available_rooms = ?, gender_preference = ?, address = ?, contact_phone = ?,
+                 latitude = ?, longitude = ?, approx_latitude = ?, approx_longitude = ?,
                  image_filename = ?, is_available = ?
                WHERE id = ? AND owner_id = ?""",
             (
@@ -300,7 +411,8 @@ def update_accommodation(accommodation_id):
                 cleaned["district"], cleaned["town"], cleaned["nearby_university"],
                 cleaned["monthly_rent"], cleaned["deposit"], cleaned["facilities"],
                 cleaned["available_rooms"], cleaned["gender_preference"], cleaned["address"],
-                cleaned["contact_phone"], new_filename or existing["image_filename"],
+                cleaned["contact_phone"], lat, lng, approx_lat, approx_lng,
+                new_filename or existing["image_filename"],
                 cleaned["is_available"], accommodation_id, g.user["id"],
             ),
         )

@@ -1,6 +1,7 @@
-"""Automated tests for the NestNear Flask API."""
+"""Automated tests for the NestNear Flask API, including coordinates, privacy, and radius search."""
 import io
 import os
+import sqlite3
 import tempfile
 import unittest
 from datetime import date, timedelta
@@ -53,15 +54,23 @@ class NestNearApiTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         items = res.get_json()["accommodations"]
         self.assertGreaterEqual(len(items), 10)
-        # Public listing responses must NEVER expose address or contact_phone
+        # Public listing responses must NEVER expose address, contact_phone, or exact latitude/longitude
         for item in items:
             self.assertNotIn("address", item)
             self.assertNotIn("contact_phone", item)
+            self.assertNotIn("latitude", item)
+            self.assertNotIn("longitude", item)
+            self.assertIsNotNone(item["approx_latitude"])
+            self.assertIsNotNone(item["approx_longitude"])
+            self.assertIsNotNone(item["distance_km"])
 
-        # Public detail endpoint must also hide address and contact_phone
+        # Public detail endpoint must also hide address, contact_phone, and exact coordinates
         detail = client.get(f"/api/accommodations/{items[0]['id']}").get_json()["accommodation"]
         self.assertNotIn("address", detail)
         self.assertNotIn("contact_phone", detail)
+        self.assertNotIn("latitude", detail)
+        self.assertNotIn("longitude", detail)
+        self.assertIsNotNone(detail["approx_latitude"])
 
     def test_register_login_and_role_checks(self):
         client, headers = self.client_with_csrf()
@@ -93,11 +102,11 @@ class NestNearApiTests(unittest.TestCase):
         post_acc = client.post("/api/accommodations", data={"title": "Test"}, headers=headers)
         self.assertEqual(post_acc.status_code, 403)
 
-    def test_owner_crud_and_ownership_protection(self):
+    def test_owner_crud_coordinates_and_ownership_protection(self):
         owner1, h1 = self.login("owner@nestnear.lk", "Owner1234")
         owner2, h2 = self.login("owner2@nestnear.lk", "Owner1234")
 
-        # Create listing with valid PNG upload
+        # Create listing with valid PNG upload and coordinates
         form_data = {
             "title": "Bright single room near University of Colombo",
             "description": "Clean and quiet single room on Reid Avenue with fast Wi-Fi and study desk.",
@@ -112,6 +121,8 @@ class NestNearApiTests(unittest.TestCase):
             "gender_preference": "Any",
             "address": "99 Reid Avenue, Colombo 03",
             "contact_phone": "0771234567",
+            "latitude": "6.902456",
+            "longitude": "79.861234",
             "is_available": "true",
             "image": (io.BytesIO(VALID_PNG_BYTES), "room.png"),
         }
@@ -122,7 +133,26 @@ class NestNearApiTests(unittest.TestCase):
             content_type="multipart/form-data",
         )
         self.assertEqual(create_res.status_code, 201, create_res.get_json())
-        acc_id = create_res.get_json()["accommodation"]["id"]
+        acc = create_res.get_json()["accommodation"]
+        acc_id = acc["id"]
+        # Owner sees exact coordinates and rounded approx coordinates
+        self.assertAlmostEqual(acc["latitude"], 6.902456, places=5)
+        self.assertAlmostEqual(acc["longitude"], 79.861234, places=5)
+        self.assertNotEqual(acc["approx_latitude"], acc["latitude"])
+
+        # Out-of-Sri-Lanka coordinates are rejected with 400
+        invalid_coords = dict(form_data)
+        invalid_coords["latitude"] = "51.5074"
+        invalid_coords["longitude"] = "-0.1278"
+        invalid_coords["image"] = (io.BytesIO(VALID_PNG_BYTES), "room.png")
+        bad_coord_res = owner1.post(
+            "/api/accommodations",
+            data=invalid_coords,
+            headers=h1,
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(bad_coord_res.status_code, 400)
+        self.assertIn("location", bad_coord_res.get_json()["errors"])
 
         # Owner 2 cannot edit or delete Owner 1's listing
         del_res = owner2.delete(f"/api/accommodations/{acc_id}", headers=h2)
@@ -143,6 +173,74 @@ class NestNearApiTests(unittest.TestCase):
         ok_del = owner1.delete(f"/api/accommodations/{acc_id}", headers=h1)
         self.assertEqual(ok_del.status_code, 200)
 
+    def test_university_radius_search_and_nearest_sort(self):
+        client = self.app.test_client()
+        res = client.get(
+            "/api/accommodations?university=University+of+Peradeniya&radius_km=5&sort=nearest"
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["selected_university"]["name"], "University of Peradeniya")
+        items = body["accommodations"]
+        self.assertGreaterEqual(len(items), 2)
+        distances = [item["distance_km"] for item in items]
+        self.assertEqual(distances, sorted(distances))
+        for d in distances:
+            self.assertLessEqual(d, 5.0)
+
+    def test_backward_compatible_migration(self):
+        # Create an old-schema database without coordinate columns and verify
+        # create_app() migrates it and backfills sample coordinates cleanly.
+        legacy_db = os.path.join(self.tmpdir.name, "legacy.sqlite3")
+        conn = sqlite3.connect(legacy_db)
+        conn.executescript(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                full_name TEXT NOT NULL,
+                email TEXT NOT NULL UNIQUE,
+                phone TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                role TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE accommodations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                accommodation_type TEXT NOT NULL,
+                district TEXT NOT NULL,
+                town TEXT NOT NULL,
+                nearby_university TEXT NOT NULL,
+                monthly_rent INTEGER NOT NULL,
+                deposit INTEGER NOT NULL DEFAULT 0,
+                facilities TEXT NOT NULL DEFAULT '',
+                available_rooms INTEGER NOT NULL DEFAULT 1,
+                gender_preference TEXT NOT NULL DEFAULT 'Any',
+                address TEXT NOT NULL,
+                contact_phone TEXT NOT NULL,
+                image_filename TEXT,
+                is_available INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        conn.close()
+
+        migrated_app = create_app(
+            {
+                "TESTING": True,
+                "DATABASE": legacy_db,
+                "UPLOAD_FOLDER": self.uploads,
+                "SEED_SAMPLE_DATA": True,
+                "SECRET_KEY": "test-secret",
+            }
+        )
+        res = migrated_app.test_client().get("/api/accommodations")
+        self.assertEqual(res.status_code, 200)
+        self.assertGreaterEqual(len(res.get_json()["accommodations"]), 10)
+
     def test_booking_workflow_and_privacy_unlock(self):
         student, hs = self.login("student@nestnear.lk", "Student123")
         owner1, ho = self.login("owner@nestnear.lk", "Owner1234")
@@ -151,6 +249,7 @@ class NestNearApiTests(unittest.TestCase):
         detail_before = student.get("/api/accommodations/1").get_json()["accommodation"]
         self.assertNotIn("address", detail_before)
         self.assertNotIn("contact_phone", detail_before)
+        self.assertNotIn("latitude", detail_before)
 
         move_in = (date.today() + timedelta(days=15)).isoformat()
         book_res = student.post(
@@ -178,17 +277,18 @@ class NestNearApiTests(unittest.TestCase):
         )
         self.assertEqual(accept_res.status_code, 200, accept_res.get_json())
 
-        # Now student CAN see exact address and contact phone!
+        # Now student CAN see exact address, contact phone, and exact coordinates!
         detail_after = student.get("/api/accommodations/1").get_json()["accommodation"]
         self.assertIn("address", detail_after)
         self.assertIn("contact_phone", detail_after)
+        self.assertIn("latitude", detail_after)
+        self.assertIn("longitude", detail_after)
 
         # And listing #1 (which had 1 room) now has 0 available rooms and is_available=False
         self.assertEqual(detail_after["available_rooms"], 0)
         self.assertFalse(detail_after["is_available"])
 
         # Accepting another overlapping booking for the same student is blocked
-        # (Seed data already created pending booking #1 for student@nestnear.lk on listing #2)
         overlap_res = owner1.patch(
             "/api/bookings/1/status",
             json={"status": "Accepted"},

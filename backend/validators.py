@@ -1,8 +1,9 @@
-"""Backend validation for all incoming data.
+"""Backend validation and geographic helpers for all incoming data.
 
 Each validate_* function returns (cleaned_data, errors). `errors` is a
 dictionary of field name -> message which the frontend shows under each field.
 """
+import math
 import re
 from datetime import date, timedelta
 
@@ -21,6 +22,13 @@ PHONE_RE = re.compile(r"^(?:\+94|0)\d{9}$")
 
 ALLOWED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 MAX_IMAGE_BYTES = 3 * 1024 * 1024  # 3 MB
+
+# Sri Lanka geographic bounding box (with small coastal buffer)
+SL_MIN_LAT, SL_MAX_LAT = 5.80, 10.00
+SL_MIN_LNG, SL_MAX_LNG = 79.40, 82.00
+
+# Grid size (~450m) used to round public coordinates so exact homes stay private
+APPROX_GRID_DEG = 0.004
 
 
 def clean_text(value):
@@ -55,6 +63,70 @@ def parse_int(value, field, label, errors, min_value, max_value):
 
 def parse_bool(value):
     return clean_text(value).lower() in ("1", "true", "yes", "on")
+
+
+def compute_approx_coordinates(latitude, longitude):
+    """Snap exact coordinates to a ~450m neighborhood grid for public display.
+
+    This protects the owner's exact house location before a booking is accepted
+    while still allowing students to browse nearby areas and approximate distance.
+    """
+    if latitude is None or longitude is None:
+        return None, None
+    approx_lat = round(round(float(latitude) / APPROX_GRID_DEG) * APPROX_GRID_DEG, 4)
+    approx_lng = round(round(float(longitude) / APPROX_GRID_DEG) * APPROX_GRID_DEG, 4)
+    return approx_lat, approx_lng
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Return great-circle distance in kilometers between two (lat, lng) points."""
+    if None in (lat1, lon1, lat2, lon2):
+        return None
+    radius_earth_km = 6371.0
+    phi1 = math.radians(float(lat1))
+    phi2 = math.radians(float(lat2))
+    d_phi = math.radians(float(lat2) - float(lat1))
+    d_lambda = math.radians(float(lon2) - float(lon1))
+
+    a = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    )
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(max(0.0, 1.0 - a)))
+    return round(radius_earth_km * c, 2)
+
+
+def parse_coordinates(raw_lat, raw_lng, errors):
+    """Validate optional or provided latitude and longitude values."""
+    lat_str = clean_text(raw_lat)
+    lng_str = clean_text(raw_lng)
+
+    if not lat_str and not lng_str:
+        return None, None
+
+    if not lat_str or not lng_str:
+        errors["location"] = "Please provide both latitude and longitude, or pin the location on the map."
+        return None, None
+
+    try:
+        lat = round(float(lat_str), 6)
+        lng = round(float(lng_str), 6)
+    except ValueError:
+        errors["location"] = "Latitude and longitude must be valid decimal coordinates."
+        return None, None
+
+    if not (-90.0 <= lat <= 90.0) or not (-180.0 <= lng <= 180.0):
+        errors["location"] = "Coordinates are outside valid latitude/longitude ranges."
+        return None, None
+
+    if not (SL_MIN_LAT <= lat <= SL_MAX_LAT and SL_MIN_LNG <= lng <= SL_MAX_LNG):
+        errors["location"] = (
+            "Selected map pin must be located within Sri Lanka "
+            f"(latitude {SL_MIN_LAT}–{SL_MAX_LAT}, longitude {SL_MIN_LNG}–{SL_MAX_LNG})."
+        )
+        return None, None
+
+    return lat, lng
 
 
 # ------------------------------------------------------------- Users ------
@@ -132,6 +204,11 @@ def validate_accommodation(form):
     deposit = parse_int(form.get("deposit", "0"), "deposit", "Deposit", errors, 0, 2000000)
     available_rooms = parse_int(form.get("available_rooms"), "available_rooms", "Available rooms", errors, 0, 100)
 
+    latitude, longitude = parse_coordinates(
+        form.get("latitude"), form.get("longitude"), errors
+    )
+    approx_latitude, approx_longitude = compute_approx_coordinates(latitude, longitude)
+
     # Facilities may arrive as several "facilities" fields or one comma list.
     raw_facilities = form.getlist("facilities") if hasattr(form, "getlist") else form.get("facilities", [])
     if isinstance(raw_facilities, str):
@@ -163,6 +240,10 @@ def validate_accommodation(form):
         "gender_preference": gender_preference,
         "address": address,
         "contact_phone": contact_phone,
+        "latitude": latitude,
+        "longitude": longitude,
+        "approx_latitude": approx_latitude,
+        "approx_longitude": approx_longitude,
         "is_available": 1 if is_available else 0,
     }
     return cleaned, errors

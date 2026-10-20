@@ -1,4 +1,4 @@
-"""SQLite database helpers.
+"""SQLite database helpers with backward-compatible schema migrations.
 
 All SQL connection handling lives in this file so that another SQL database
 could be introduced later by changing only this module (and the SQL syntax).
@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS accommodations (
                        CHECK (gender_preference IN ('Any', 'Male', 'Female')),
     address            TEXT    NOT NULL,
     contact_phone      TEXT    NOT NULL,
+    latitude           REAL,
+    longitude          REAL,
+    approx_latitude    REAL,
+    approx_longitude   REAL,
     image_filename     TEXT,
     is_available       INTEGER NOT NULL DEFAULT 1 CHECK (is_available IN (0, 1)),
     created_at         TEXT    NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -101,6 +105,26 @@ def transaction(db):
         raise
 
 
+def run_migrations(conn):
+    """Safely add new columns to existing SQLite databases without losing data."""
+    columns = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(accommodations)").fetchall()
+    }
+    new_columns = [
+        ("latitude", "REAL"),
+        ("longitude", "REAL"),
+        ("approx_latitude", "REAL"),
+        ("approx_longitude", "REAL"),
+    ]
+    for col_name, col_type in new_columns:
+        if col_name not in columns:
+            conn.execute(
+                f"ALTER TABLE accommodations ADD COLUMN {col_name} {col_type}"
+            )
+    conn.commit()
+
+
 def init_db(app):
     """Create the database file and tables if they do not exist yet."""
     db_path = app.config["DATABASE"]
@@ -108,6 +132,7 @@ def init_db(app):
     conn = connect(db_path)
     try:
         conn.executescript(SCHEMA)
+        run_migrations(conn)
         conn.commit()
         if app.config.get("SEED_SAMPLE_DATA"):
             from seed import seed_sample_data  # imported here to avoid a circular import

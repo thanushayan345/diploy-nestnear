@@ -1,7 +1,8 @@
-"""Sample development data for NestNear.
+"""Sample development data for NestNear with real Sri Lankan coordinates.
 
 The data is inserted automatically the first time the backend starts (when
-the users table is empty and SEED_SAMPLE_DATA=true).
+the users table is empty and SEED_SAMPLE_DATA=true). Existing databases are
+also backfilled with coordinates if any sample listing has NULL coordinates.
 
 To delete the database and start fresh, run:
     python seed.py --reset
@@ -12,6 +13,8 @@ import sys
 from datetime import date, timedelta
 
 from werkzeug.security import generate_password_hash
+
+from validators import compute_approx_coordinates
 
 SAMPLE_IMAGE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sample_images")
 
@@ -35,6 +38,7 @@ LISTINGS = [
         "rent": 18000, "deposit": 36000, "rooms": 1, "gender": "Male",
         "facilities": "Wi-Fi,Furniture,Study Table,Fan,Water Included",
         "address": "42/3 Station Road, Katubedda, Moratuwa", "phone": "0771234567",
+        "latitude": 6.7982, "longitude": 79.8986,
     },
     {
         "owner": 0, "image": "boarding1", "type": "Boarding House",
@@ -44,6 +48,7 @@ LISTINGS = [
         "rent": 22000, "deposit": 44000, "rooms": 4, "gender": "Female",
         "facilities": "Wi-Fi,Furniture,Kitchen Access,Meals Provided,CCTV,Laundry,Water Included",
         "address": "15 Pagoda Road, Nugegoda", "phone": "0771234567",
+        "latitude": 6.8614, "longitude": 79.8992,
     },
     {
         "owner": 0, "image": "annex2", "type": "Annex",
@@ -53,6 +58,7 @@ LISTINGS = [
         "rent": 55000, "deposit": 110000, "rooms": 1, "gender": "Any",
         "facilities": "Wi-Fi,Attached Bathroom,Furniture,Kitchen Access,Air Conditioning,Hot Water,Parking",
         "address": "8A Rosmead Place, Colombo 07", "phone": "0771234567",
+        "latitude": 6.9083, "longitude": 79.8654,
     },
     {
         "owner": 0, "image": "room2", "type": "Room",
@@ -62,6 +68,7 @@ LISTINGS = [
         "rent": 12000, "deposit": 24000, "rooms": 2, "gender": "Male",
         "facilities": "Furniture,Study Table,Fan,Water Included,Electricity Included",
         "address": "120 Temple Road, Dalugama, Kelaniya", "phone": "0771234567",
+        "latitude": 6.9765, "longitude": 79.9188,
     },
     {
         "owner": 0, "image": "boarding2", "type": "Boarding House",
@@ -71,6 +78,7 @@ LISTINGS = [
         "rent": 28000, "deposit": 28000, "rooms": 3, "gender": "Any",
         "facilities": "Wi-Fi,Meals Provided,Kitchen Access,Laundry,CCTV,Furniture",
         "address": "33 New Kandy Road, Malabe", "phone": "0771234567",
+        "latitude": 6.9118, "longitude": 79.9695,
     },
     {
         "owner": 1, "image": "annex1", "type": "Annex",
@@ -80,6 +88,7 @@ LISTINGS = [
         "rent": 25000, "deposit": 50000, "rooms": 1, "gender": "Female",
         "facilities": "Wi-Fi,Attached Bathroom,Hot Water,Furniture,Kitchen Access",
         "address": "56 Galaha Road, Peradeniya", "phone": "0712345678",
+        "latitude": 7.2612, "longitude": 80.5948,
     },
     {
         "owner": 1, "image": "room1", "type": "Room",
@@ -89,6 +98,7 @@ LISTINGS = [
         "rent": 9500, "deposit": 19000, "rooms": 2, "gender": "Male",
         "facilities": "Fan,Kitchen Access,Water Included,Study Table",
         "address": "21 Esplanade Road, Peradeniya", "phone": "0712345678",
+        "latitude": 7.2665, "longitude": 80.5921,
     },
     {
         "owner": 1, "image": "boarding1", "type": "Boarding House",
@@ -98,6 +108,7 @@ LISTINGS = [
         "rent": 11000, "deposit": 22000, "rooms": 5, "gender": "Any",
         "facilities": "Wi-Fi,Furniture,Kitchen Access,Study Table,Fan",
         "address": "7 Beach Road, Wellamadama, Matara", "phone": "0712345678",
+        "latitude": 5.9415, "longitude": 80.5732,
     },
     {
         "owner": 1, "image": "room2", "type": "Room",
@@ -107,6 +118,7 @@ LISTINGS = [
         "rent": 10000, "deposit": 20000, "rooms": 1, "gender": "Female",
         "facilities": "Fan,Furniture,Meals Provided,Water Included",
         "address": "14 Palaly Road, Thirunelvely, Jaffna", "phone": "0712345678",
+        "latitude": 9.6882, "longitude": 80.0249,
     },
     {
         "owner": 0, "image": "annex2", "type": "Annex",
@@ -116,6 +128,7 @@ LISTINGS = [
         "rent": 16000, "deposit": 32000, "rooms": 1, "gender": "Any",
         "facilities": "Attached Bathroom,Kitchen Access,Parking,Furniture,Fan",
         "address": "3 Pambahinna Road, Belihuloya", "phone": "0771234567",
+        "latitude": 6.7118, "longitude": 80.7845,
     },
     {
         "owner": 1, "image": "boarding2", "type": "Boarding House",
@@ -125,6 +138,7 @@ LISTINGS = [
         "rent": 8500, "deposit": 17000, "rooms": 0, "gender": "Male",
         "facilities": "Kitchen Access,Fan,Water Included,Furniture",
         "address": "88 Jaffna Road, Mihintale", "phone": "0712345678", "available": False,
+        "latitude": 8.3534, "longitude": 80.5068,
     },
     {
         "owner": 0, "image": "room1", "type": "Room",
@@ -134,6 +148,7 @@ LISTINGS = [
         "rent": 13000, "deposit": 26000, "rooms": 1, "gender": "Any",
         "facilities": "Wi-Fi,Study Table,Furniture,Hot Water",
         "address": "19 Passara Road, Badulla", "phone": "0771234567",
+        "latitude": 6.9852, "longitude": 81.0725,
     },
 ]
 
@@ -150,9 +165,34 @@ def copy_sample_image(name, index, upload_folder):
     return None  # the frontend shows a placeholder when there is no photo
 
 
+def backfill_sample_coordinates(conn):
+    """Backfill coordinates on existing sample listings after a schema migration."""
+    by_title = {item["title"]: item for item in LISTINGS}
+    rows = conn.execute(
+        "SELECT id, title, latitude, longitude FROM accommodations WHERE latitude IS NULL"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        sample = by_title.get(row["title"])
+        if sample:
+            lat = sample["latitude"]
+            lng = sample["longitude"]
+            approx_lat, approx_lng = compute_approx_coordinates(lat, lng)
+            conn.execute(
+                """UPDATE accommodations
+                   SET latitude = ?, longitude = ?, approx_latitude = ?, approx_longitude = ?
+                   WHERE id = ?""",
+                (lat, lng, approx_lat, approx_lng, row["id"]),
+            )
+            updated += 1
+    if updated:
+        conn.commit()
+
+
 def seed_sample_data(conn, upload_folder):
     """Insert demo users, listings and one booking if the database is empty."""
     if conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] > 0:
+        backfill_sample_coordinates(conn)
         return
 
     user_ids = []
@@ -165,19 +205,24 @@ def seed_sample_data(conn, upload_folder):
 
     listing_ids = []
     for index, item in enumerate(LISTINGS, start=1):
+        lat = item["latitude"]
+        lng = item["longitude"]
+        approx_lat, approx_lng = compute_approx_coordinates(lat, lng)
         cur = conn.execute(
             """INSERT INTO accommodations
                (owner_id, title, description, accommodation_type, district, town,
                 nearby_university, monthly_rent, deposit, facilities, available_rooms,
-                gender_preference, address, contact_phone, image_filename, is_available,
+                gender_preference, address, contact_phone, latitude, longitude,
+                approx_latitude, approx_longitude, image_filename, is_available,
                 created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        datetime('now', ?))""",
             (
                 user_ids[item["owner"]], item["title"], item["description"], item["type"],
                 item["district"], item["town"], item["university"], item["rent"],
                 item["deposit"], item["facilities"], item["rooms"], item["gender"],
-                item["address"], item["phone"], copy_sample_image(item["image"], index, upload_folder),
+                item["address"], item["phone"], lat, lng, approx_lat, approx_lng,
+                copy_sample_image(item["image"], index, upload_folder),
                 1 if item.get("available", True) else 0,
                 f"-{len(LISTINGS) - index} hours",  # newer listings appear first
             ),

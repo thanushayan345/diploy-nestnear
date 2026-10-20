@@ -57,7 +57,8 @@ def student_bookings():
     rows = get_db().execute(
         """SELECT b.id, b.accommodation_id, b.move_in_date, b.message, b.status, b.created_at,
                   a.title, a.town, a.district, a.nearby_university, a.monthly_rent, a.deposit,
-                  a.image_filename, a.address, a.contact_phone, u.full_name AS owner_name
+                  a.image_filename, a.address, a.contact_phone, a.latitude, a.longitude,
+                  a.approx_latitude, a.approx_longitude, u.full_name AS owner_name
            FROM booking_requests b
            JOIN accommodations a ON a.id = b.accommodation_id
            JOIN users u ON u.id = a.owner_id
@@ -82,14 +83,18 @@ def student_bookings():
                 "nearby_university": r["nearby_university"],
                 "monthly_rent": r["monthly_rent"],
                 "deposit": r["deposit"],
+                "approx_latitude": r["approx_latitude"],
+                "approx_longitude": r["approx_longitude"],
                 "image_url": image_url(r["image_filename"]),
             },
         }
-        # Private contact details only after the owner accepts.
+        # Private contact details and exact coordinates only after the owner accepts.
         if r["status"] == "Accepted":
             item["accommodation"]["address"] = r["address"]
             item["accommodation"]["contact_phone"] = r["contact_phone"]
             item["accommodation"]["owner_name"] = r["owner_name"]
+            item["accommodation"]["latitude"] = r["latitude"]
+            item["accommodation"]["longitude"] = r["longitude"]
         bookings.append(item)
     return jsonify({"bookings": bookings})
 
