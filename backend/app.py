@@ -86,6 +86,25 @@ def create_app(test_config=None):
     def health():
         return {"status": "ok"}
 
+    # Serve the built React frontend (frontend/dist) in production (e.g. Render)
+    frontend_dist = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend", "dist"))
+
+    @app.route("/", defaults={"path": ""})
+    @app.route("/<path:path>")
+    def serve_frontend(path):
+        if path.startswith("api/") or path.startswith("uploads/"):
+            return error_response("The requested resource was not found.", 404)
+        if os.path.isdir(frontend_dist):
+            candidate = os.path.join(frontend_dist, path)
+            if path and os.path.isfile(candidate):
+                return send_from_directory(frontend_dist, path)
+            return send_from_directory(frontend_dist, "index.html")
+        return {
+            "service": "NestNear API",
+            "status": "running",
+            "hint": "Run 'npm run build' in frontend/ to serve the UI from Flask.",
+        }
+
     register_error_handlers(app)
     return app
 
