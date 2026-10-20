@@ -35,10 +35,9 @@ def create_app(test_config=None):
 
     secret_key = os.environ.get("SECRET_KEY")
     if not secret_key or secret_key == "change-me-to-a-long-random-string":
-        # A random key works for development, but everyone is logged out
-        # whenever the server restarts. Set SECRET_KEY in .env to avoid this.
-        secret_key = secrets.token_hex(32)
-        print("WARNING: SECRET_KEY is not set in backend/.env - using a temporary key.")
+        # Stable fallback key so sessions persist on hosts like PythonAnywhere
+        # even if a .env file was not created yet.
+        secret_key = "nestnear-default-session-key-" + BASE_DIR
 
     app.config.update(
         SECRET_KEY=secret_key,

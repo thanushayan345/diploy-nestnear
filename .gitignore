@@ -22,10 +22,9 @@ backend/uploads/*
 backend/.env
 frontend/.env
 
-# Node.js dependencies & production build
+# Node.js dependencies
 node_modules/
 frontend/node_modules/
-frontend/dist/
 
 # Editor & OS files
 .vscode/
