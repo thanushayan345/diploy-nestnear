@@ -97,7 +97,7 @@ export default function LoginPage() {
         </form>
 
         {/* Demo Account Quick Fill */}
-        <div className="mt-6 pt-5 border-t border-gray-200">
+       {/* <div className="mt-6 pt-5 border-t border-gray-200">
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
             Quick Demo Accounts
           </p>
@@ -117,7 +117,7 @@ export default function LoginPage() {
               Demo Owner
             </button>
           </div>
-        </div>
+        </div>*/}
 
         <p className="mt-6 text-center text-sm text-gray-600">
           Don&apos;t have an account?{" "}
